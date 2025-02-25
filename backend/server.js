@@ -1,106 +1,67 @@
-require('dotenv').config();
+// Updated server.js with lower confidence threshold and broader keyword detection
 const express = require('express');
-const multer = require('multer');
 const cors = require('cors');
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const multer = require('multer');
 const { RekognitionClient, DetectLabelsCommand } = require('@aws-sdk/client-rekognition');
+require('dotenv').config();
 
 const app = express();
-const port = process.env.PORT || 5000;
+const PORT = 5000;
 
 app.use(cors());
+app.use(express.json({ limit: '10mb' }));
 
-// AWS SDK v3 Configuration
-const s3 = new S3Client({
-  region: process.env.AWS_REGION,
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  },
-});
+const rekognition = new RekognitionClient({ region: process.env.AWS_REGION });
+const upload = multer();
 
-const rekognition = new RekognitionClient({
-  region: process.env.AWS_REGION,
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  },
-});
-
-const upload = multer({ storage: multer.memoryStorage() });
-
-// **Updated List to Include Mapped Items**
-const WORKOUT_ITEMS = [
-  "Dumbbells / Barbells", "Dumbbell", "Barbell", "Kettlebell", "Treadmill", "Weight Bench",
-  "Squat Rack", "Leg Press Machine", "Resistance Band", "Exercise Bike", "Rowing Machine",
-  "Pull-up Bar", "Workout Machine", "Strength Equipment", "Bench Press", "Plates",
-  "Barbell Rack", "Dumbbell Rack", "Home Gym"
+// Expanded gym equipment detection list
+const gymEquipmentList = [
+  'Bench Press', 'Treadmill', 'Gym Weights', 'Dumbbell', 'Barbell',
+  'Squat Rack', 'Kettlebell', 'Resistance Band', 'Rowing Machine', 'Weight Plate',
+  'Exercise Bike', 'Lat Pulldown Machine', 'Cable Crossover', 'Smith Machine',
+  'Gym', 'Fitness', 'Sport', 'Workout', 'Exercise', 'Bodybuilding'
 ];
 
-// **Mapping AWS Rekognition Labels to Actual Gym Equipment**
-const LABEL_MAPPING = {
-  "Gym Weights": "Dumbbells / Barbells",
-  "Dead Lift": "Barbell",
-  "Bicep Curls": "Dumbbells",
-  "Bench Press": "Weight Bench",
-  "Squat": "Squat Rack",
-  "Leg Press": "Leg Press Machine",
-  "Rowing Machine": "Rowing Machine",
-};
+// Detection endpoint
+app.post('/detect-frame', upload.none(), async (req, res) => {
+  const { imageBase64, sessionId } = req.body;
+  if (!imageBase64 || !sessionId) {
+    return res.status(400).json({ message: 'Missing image data or session ID.' });
+  }
 
-app.post('/upload', upload.single('image'), async (req, res) => {
+  const imageBuffer = Buffer.from(imageBase64, 'base64');
+
   try {
-    console.log('📸 Received file:', req.file);
+    const command = new DetectLabelsCommand({
+      Image: { Bytes: imageBuffer },
+      MaxLabels: 20,
+      MinConfidence: 20 // Lowered threshold for more detections
+    });
 
-    if (!req.file) {
-      console.error('❌ No file uploaded');
-      return res.status(400).json({ message: 'No file uploaded' });
-    }
+    const response = await rekognition.send(command);
+    console.log("Full Rekognition Response:", response.Labels);
 
-    // Upload image to S3
-    const s3Params = {
-      Bucket: process.env.S3_BUCKET_NAME,
-      Key: `uploads/${Date.now()}_${req.file.originalname}`,
-      Body: req.file.buffer,
-      ContentType: req.file.mimetype,
-    };
-
-    console.log('⬆️ Uploading to S3...');
-    await s3.send(new PutObjectCommand(s3Params));
-    console.log('✅ Image uploaded to S3:', s3Params.Key);
-
-    // Call AWS Rekognition
-    const rekogParams = {
-      Image: { S3Object: { Bucket: process.env.S3_BUCKET_NAME, Name: s3Params.Key } },
-      MaxLabels: 30,  // Increased label limit for broader detection
-      MinConfidence: 35,  // Lowered confidence to detect smaller objects
-    };
-
-    console.log('🔍 Calling Rekognition...');
-    const rekogResponse = await rekognition.send(new DetectLabelsCommand(rekogParams));
-
-    // Extract detected labels with confidence scores
-    const detectedItems = rekogResponse.Labels.map(label => ({
-      name: LABEL_MAPPING[label.Name] || label.Name, // Map detected labels to gym equipment
-      confidence: label.Confidence.toFixed(2) + "%",
+    // Filter detections for gym equipment and include confidence
+    const detections = response.Labels.filter(label =>
+      gymEquipmentList.includes(label.Name)
+    ).map(label => ({
+      name: label.Name,
+      confidence: `${label.Confidence.toFixed(2)}%`
     }));
 
-    console.log("🔎 FULL REKOGNITION RESPONSE:", JSON.stringify(detectedItems, null, 2));
-
-    // Strictly filter only known workout items & remove "Fitness" and "Gym"
-    const filteredItems = detectedItems
-      .filter(item => WORKOUT_ITEMS.includes(item.name) && !["Fitness", "Gym"].includes(item.name))
-      .map(item => `${item.name} (${item.confidence})`);
-
-    console.log("🎯 Final Filtered Equipment:", filteredItems);
-
-    // Send final response to frontend
-    res.json({ detections: filteredItems });
-
+    // Send back all detections for testing
+    res.json({
+      detectedItems: detections,
+      allLabels: response.Labels.map(label => ({
+        name: label.Name,
+        confidence: `${label.Confidence.toFixed(2)}%`
+      }))
+    });
   } catch (error) {
-    console.error('❌ Error processing image:', error);
-    res.status(500).json({ message: 'Error processing image', error: error.message });
+    console.error('Detection Error:', error);
+    res.status(500).json({ message: 'Error processing image.' });
   }
 });
 
-app.listen(port, () => console.log(`✅ Server running on http://localhost:${port}`));
+// Start the server
+app.listen(PORT, () => console.log(`✅ Server running on port ${PORT}`));

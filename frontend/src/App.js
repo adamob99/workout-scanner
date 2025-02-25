@@ -1,82 +1,101 @@
-import { useState } from "react";
-import axios from "axios";
+// Updated App.js to display all detections and log data for debugging
+import React, { useEffect, useRef, useState } from 'react';
+import './App.css';
 
-export default function App() {
-  const [image, setImage] = useState(null);
-  const [preview, setPreview] = useState(null);
-  const [detections, setDetections] = useState([]);
-  const [loading, setLoading] = useState(false);
+const BACKEND_URL = "https://9ec5-2604-3d08-467f-e440-fdb5-605b-232b-76aa.ngrok-free.app";
 
-  const BACKEND_URL = "http://35.170.242.201:5000"; // Your EC2 backend
+function App() {
+  const videoRef = useRef(null);
+  const [detectedItems, setDetectedItems] = useState([]);
+  const [allLabels, setAllLabels] = useState([]);
+  const [errorMessage, setErrorMessage] = useState('');
 
-  const handleImageChange = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      setImage(file);
-      setPreview(URL.createObjectURL(file));
+  // Start camera on component mount
+  useEffect(() => {
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment' },
+          audio: false,
+        });
+        videoRef.current.srcObject = stream;
+      } catch (error) {
+        console.error('Camera access error:', error);
+        setErrorMessage('Camera access failed. Please check permissions.');
+      }
     }
-  };
+    startCamera();
+  }, []);
 
-  const handleUpload = async () => {
-    if (!image) return alert("Please select an image");
-    setLoading(true);
+  // Send frame every 2 seconds for detection
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (videoRef.current) {
+        const canvas = document.createElement('canvas');
+        canvas.width = videoRef.current.videoWidth;
+        canvas.height = videoRef.current.videoHeight;
+        const context = canvas.getContext('2d');
+        context.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
 
-    const formData = new FormData();
-    formData.append("image", image);
+        const imageBase64 = canvas.toDataURL('image/jpeg').split(',')[1];
+        const sessionId = Date.now().toString();
 
-    try {
-      const response = await axios.post(`${BACKEND_URL}/upload`, formData);
-      setDetections(response.data.detections);
-    } catch (error) {
-      console.error("Upload error:", error);
-      alert("Error uploading image");
-    } finally {
-      setLoading(false);
-    }
-  };
+        try {
+          const response = await fetch(`${BACKEND_URL}/detect-frame`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ imageBase64, sessionId }),
+          });
+
+          const data = await response.json();
+          console.log('Detected Items:', data.detectedItems);
+          console.log('All Labels:', data.allLabels);
+          setDetectedItems(data.detectedItems);
+          setAllLabels(data.allLabels);
+        } catch (error) {
+          console.error('Error sending frame:', error);
+          setErrorMessage('Failed to send frame for detection.');
+        }
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, []);
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100 p-4">
-      <h1 className="text-xl font-bold mb-4">Scan Your Home Gym</h1>
+    <div className="App">
+      <h1>🏋️‍♂️ Real-Time Gym Equipment Detection</h1>
 
-      <input
-        type="file"
-        accept="image/*"
-        capture="environment"
-        onChange={handleImageChange}
-        className="mb-3 file:mr-4 file:py-2 file:px-4 file:border-0
-                   file:text-sm file:font-semibold file:bg-blue-500 file:text-white
-                   hover:file:bg-blue-600"
+      {errorMessage && (
+        <div className="error-message">
+          <p>{errorMessage}</p>
+        </div>
+      )}
+
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        style={{ width: '100%', borderRadius: '10px', marginTop: '20px' }}
       />
 
-      {preview && (
-        <div className="flex justify-center w-full">
-          <img
-            src={preview}
-            alt="Preview"
-            className="w-[80vw] max-w-[250px] h-auto max-h-[180px] object-contain rounded-lg shadow-lg mb-3"
-          />
-        </div>
-      )}
-
-      <button
-        onClick={handleUpload}
-        className="bg-blue-500 text-white px-6 py-2 rounded-lg shadow-md hover:bg-blue-600 disabled:bg-gray-400"
-        disabled={loading}
-      >
-        {loading ? "Detecting..." : "Detect Equipment"}
-      </button>
-
-      {detections.length > 0 && (
-        <div className="mt-6 bg-white p-4 shadow-lg rounded-lg">
-          <h2 className="text-lg font-semibold mb-2">Detected Equipment:</h2>
-          <ul className="list-disc pl-5">
-            {detections.map((item, index) => (
-              <li key={index} className="text-gray-700">{item}</li>
+      <div className="detections">
+        <h2>Detected Gym Equipment:</h2>
+        {detectedItems.length > 0 ? (
+          <ul>
+            {detectedItems.map((item, index) => (
+              <li key={index}>{`${item.name} - Confidence: ${item.confidence}`}</li>
             ))}
           </ul>
-        </div>
-      )}
+        ) : (
+          <p>No specific gym equipment detected yet.</p>
+        )}
+      </div>
+
+    
     </div>
   );
 }
+
+export default App;
